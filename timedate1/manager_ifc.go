@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/linuxdeepin/dde-daemon/timedate1/zoneinfo"
 	"github.com/linuxdeepin/go-lib/dbusutil"
 	. "github.com/linuxdeepin/go-lib/gettext"
-	"github.com/linuxdeepin/dde-daemon/timedate1/zoneinfo"
+	"github.com/linuxdeepin/go-lib/strv"
 )
 
 func (m *Manager) Reset() *dbus.Error {
@@ -133,6 +134,22 @@ func (m *Manager) SetTimezone(zone string) *dbus.Error {
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
 
+	// 以下时区不在国际时区中，如果用户选择以下时区，统一链接到上海时区
+	customTimeZoneList := []string{"Asia/Chengdu", "Asia/Beijing", "Asia/Nanjing", "Asia/Wuhan", "Asia/Xian"}
+	if strv.Strv(customTimeZoneList).Contains(zone) {
+		m.PropsMu.Lock()
+		m.setPropTimezone(zone)
+		m.PropsMu.Unlock()
+
+		err = m.dConfigManager.SetValue(dbus.Flags(0), dSettingsTimeZone, dbus.MakeVariant(zone))
+		if err != nil {
+			logger.Warning(err)
+			return dbusutil.ToError(err)
+		}
+
+		zone = "Asia/Shanghai"
+	}
+
 	err = m.setter.SetTimezone(0, zone,
 		Tr("Authentication is required to set the system timezone"))
 	if err != nil {
@@ -154,10 +171,18 @@ func (m *Manager) AddUserTimezone(zone string) *dbus.Error {
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
 
-	oldList, hasNil := filterNilString(m.UserTimezones.Get())
+	oldList, hasNil := filterNilString(m.UserTimezones)
 	newList, added := addItemToList(zone, oldList)
 	if added || hasNil {
-		m.UserTimezones.Set(newList)
+		m.PropsMu.Lock()
+		m.UserTimezones = newList
+		m.PropsMu.Unlock()
+		m.service.EmitPropertyChanged(m, "UserTimezones", m.UserTimezones)
+		err = m.dConfigManager.SetValue(dbus.Flags(0), dSettingsKeyTimezoneList, dbus.MakeVariant(m.UserTimezones))
+		if err != nil {
+			logger.Warning(err)
+			return dbusutil.ToError(err)
+		}
 	}
 	return nil
 }
@@ -173,10 +198,11 @@ func (m *Manager) DeleteUserTimezone(zone string) *dbus.Error {
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
 
-	oldList, hasNil := filterNilString(m.UserTimezones.Get())
+	oldList, hasNil := filterNilString(m.UserTimezones)
 	newList, deleted := deleteItemFromList(zone, oldList)
 	if deleted || hasNil {
-		m.UserTimezones.Set(newList)
+		m.UserTimezones = newList
+		m.service.EmitPropertyChanged(m, "UserTimezones", m.UserTimezones)
 	}
 	return nil
 }
